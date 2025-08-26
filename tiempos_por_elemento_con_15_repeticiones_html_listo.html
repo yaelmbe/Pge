@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tiempos por Elemento · 15 Reps</title>
+  <style>
+    :root{--bg:#f7f7fb;--fg:#0f172a;--muted:#6b7280;--card:#fff;--border:#e5e7eb;--ok:#16a34a;--danger:#dc2626;--pri:#4f46e5;--mono:ui-monospace,Menlo,Consolas,monospace}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial}
+    .wrap{max-width:1200px;margin:0 auto;padding:16px}
+    header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:12px}
+    h1{margin:0;font-size:clamp(20px,3vw,26px)}
+    .controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
+    label.lite{display:flex;gap:8px;align-items:center;background:#fff;border:1px solid var(--border);border-radius:10px;padding:6px 10px}
+    input[type="number"],select{border:1px solid var(--border);border-radius:8px;padding:6px 8px;min-width:70px}
+    .btn{border:1px solid var(--border);background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer}
+    .btn.ok{background:var(--ok);color:#fff;border-color:transparent}
+    .btn.danger{background:var(--danger);color:#fff;border-color:transparent}
+    .btn.pri{background:var(--pri);color:#fff;border-color:transparent}
+    .btn:disabled{opacity:.55;cursor:not-allowed}
+    .table-wrap{overflow:auto;max-height:72vh}
+    table{width:100%;border-collapse:separate;border-spacing:0}
+    th,td{padding:8px;border-top:1px solid var(--border)}
+    thead th{position:sticky;top:0;background:#f3f4f6;z-index:2}
+    thead th:first-child,.sticky{position:sticky;left:0;background:#fff;z-index:3}
+    tbody tr:nth-child(even){background:#fafafa}
+    .mono{font-family:var(--mono)}
+    .muted{color:var(--muted)}
+    .name{width:220px}
+    .cell{display:flex;flex-direction:column;align-items:center;gap:6px}
+    .cell .tiny{display:flex;gap:4px;flex-wrap:wrap}
+    .tiny .btn{padding:4px 8px;font-size:12px}
+    .cell input{width:110px;text-align:center}
+    tfoot td{background:#f9fafb;font-weight:600}
+    .hint{font-size:12px;color:var(--muted);margin-top:8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Tiempos por Elemento (15 repeticiones)</h1>
+      <div class="controls">
+        <label class="lite">Elementos
+          <input id="numElements" type="number" min="1" max="300" value="5"/>
+        </label>
+        <button id="clearAll" class="btn danger">Limpiar todos los datos</button>
+        <button id="exportCsv" class="btn">Exportar CSV</button>
+        <button id="exportJson" class="btn">Exportar JSON</button>
+        <label class="btn" for="importJson">Importar JSON</label>
+        <input id="importJson" type="file" accept="application/json" style="display:none"/>
+      </div>
+    </header>
+
+    <div class="card table-wrap">
+      <table id="grid">
+        <thead>
+          <tr id="headRow">
+            <th class="sticky">Elemento / Reps</th>
+          </tr>
+        </thead>
+        <tbody id="bodyRows"></tbody>
+        <tfoot>
+          <tr id="footRow">
+            <td class="sticky" style="text-align:right">Total columna</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <div class="hint">Cada celda es una <b>repetición (1 a 15)</b> con cronómetro: Iniciar, Detener, Reanudar y Borrar. Puedes editar manualmente (p. ej. <span class="mono">1:23.450</span>, <span class="mono">7.2</span> o <span class="mono">8</span>). Datos guardados en este navegador.</div>
+  </div>
+
+  <script>
+    const REPS = 15;
+    const LS_KEY = 'time_elements_15reps_v1';
+
+    function pad(n,l=2){return String(n).padStart(l,'0')}
+    function fmt(ms){ if(!ms) return '00:00.000'; const t=Math.max(0,Math.floor(ms)); const m=Math.floor(t/60000); const s=Math.floor((t%60000)/1000); const mm=t%1000; return `${pad(m)}:${pad(s)}.${pad(mm,3)}` }
+    function parse(text){ if(!text) return 0; const s=String(text).trim(); if(/^\d+$/.test(s)) return Number(s)*1000; const parts=s.split(':'); if(parts.length===1){ return Math.round(parseFloat(parts[0].replace(',', '.'))*1000)||0 } const mm=parseInt(parts[0],10)||0; const secPart=parts[1].replace(',', '.'); const ss=Math.floor(parseFloat(secPart))||0; const mmm=Math.round((parseFloat(secPart)-ss)*1000)||0; return mm*60000+ss*1000+mmm }
+
+    const state = { elements: [], running: {} };
+    function uuid(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0,v=c==='x'?r:(r&0x3|0x8);return v.toString(16)})}
+    function save(){ localStorage.setItem(LS_KEY, JSON.stringify(state.elements)) }
+    function load(){ const raw=localStorage.getItem(LS_KEY); if(raw){ try{ const arr=JSON.parse(raw); state.elements=arr.map(e=>({ id:e.id||uuid(), name:e.name||'Elemento', reps:Array.from({length:REPS},(_,i)=> Number(e.reps?.[i]||0)) })); }catch{ state.elements=[] } }
+      if(state.elements.length===0){ state.elements = Array.from({length:5},(_,i)=>({id:uuid(), name:`Elemento ${i+1}`, reps:Array(REPS).fill(0)})) }
+    }
+
+    // DOM refs
+    const numEl = document.getElementById('numElements');
+    const headRow = document.getElementById('headRow');
+    const bodyRows = document.getElementById('bodyRows');
+    const footRow = document.getElementById('footRow');
+
+    // Build header & footer
+    function buildHead(){
+      headRow.innerHTML='';
+      const th0=document.createElement('th'); th0.className='sticky'; th0.textContent='Elemento / Reps'; headRow.appendChild(th0);
+      for(let i=0;i<REPS;i++){ const th=document.createElement('th'); th.textContent=`Rep ${i+1}`; headRow.appendChild(th) }
+      const thT=document.createElement('th'); thT.textContent='Total Elemento'; headRow.appendChild(thT);
+    }
+    function colTotals(){ const totals=Array(REPS).fill(0); state.elements.forEach(e=> e.reps.forEach((v,i)=> totals[i]+= (v||0))); return totals }
+    function buildFoot(){
+      footRow.innerHTML='';
+      const td0=document.createElement('td'); td0.className='sticky'; td0.style.textAlign='right'; td0.textContent='Total columna'; footRow.appendChild(td0);
+      const totals=colTotals();
+      for(let i=0;i<REPS;i++){ const td=document.createElement('td'); td.className='mono'; td.textContent=fmt(totals[i]); footRow.appendChild(td) }
+      const tdG=document.createElement('td'); tdG.className='mono'; tdG.textContent=fmt(totals.reduce((a,b)=>a+b,0)); footRow.appendChild(tdG);
+    }
+
+    function rowTotal(e){ return e.reps.reduce((a,b)=>a+(b||0),0) }
+    function keyFor(id,rep){ return `${id}::${rep}` }
+
+    function render(){
+      buildHead();
+      bodyRows.innerHTML='';
+      state.elements.forEach((e,idx)=>{
+        const tr=document.createElement('tr');
+        const td0=document.createElement('td'); td0.className='sticky';
+        td0.innerHTML = `
+          <div>
+            <input class="name" value="${e.name.replaceAll('"','&quot;')}"/>
+            <div class="hint">Repeticiones fijas: 1 a 15</div>
+          </div>`;
+        tr.appendChild(td0);
+        td0.querySelector('input.name').addEventListener('input',ev=>{ e.name=ev.target.value; save(); });
+
+        for(let j=0;j<REPS;j++){
+          const td=document.createElement('td');
+          const cell=document.createElement('div'); cell.className='cell';
+          const label=document.createElement('div'); label.className='mono'; label.textContent = display(e,j);
+          const input=document.createElement('input'); input.placeholder='mm:ss.mmm'; input.value = fmt(e.reps[j]||0);
+          input.addEventListener('keydown',ev=>{ if(ev.key==='Enter') input.blur() });
+          input.addEventListener('blur',()=>{ e.reps[j]=parse(input.value); save(); buildFoot(); label.textContent = fmt(e.reps[j]||0) });
+          const tiny=document.createElement('div'); tiny.className='tiny';
+          const bStart=btn('Iniciar','ok',()=> start(e.id,j));
+          const bStop=btn('Detener','danger',()=> stop(e.id,j));
+          const bRes=btn('Reanudar','pri',()=> resume(e.id,j));
+          const bClr=btn('Borrar','',()=> { reset(e.id,j); input.value=fmt(0); label.textContent=fmt(0) });
+          tiny.append(bStart,bStop,bRes,bClr);
+          cell.append(label,input,tiny); td.appendChild(cell); tr.appendChild(td);
+        }
+        const tdT=document.createElement('td'); tdT.className='mono'; tdT.textContent=fmt(rowTotal(e)); tr.appendChild(tdT);
+        bodyRows.appendChild(tr);
+      });
+      buildFoot();
+      refreshTicker.start();
+    }
+
+    function btn(txt, cls, on){ const b=document.createElement('button'); b.className=`btn ${cls}`; b.textContent=txt; b.addEventListener('click',on); return b }
+
+    // Timers
+    function display(e,j){
+      const k=keyFor(e.id,j); const info=state.running[k];
+      if(info){ const base=e.reps[j]||0; const d=performance.now()-info.startedAt; return fmt(base+d) }
+      return fmt(e.reps[j]||0)
+    }
+    function start(id,j){ const k=keyFor(id,j); state.running[k]={startedAt:performance.now()}; refreshTicker.ping() }
+    function stop(id,j){ const k=keyFor(id,j); const info=state.running[k]; if(!info) return; const e=state.elements.find(x=>x.id===id); if(!e) return; const d=performance.now()-info.startedAt; e.reps[j]=Math.max(0,(e.reps[j]||0)+d); delete state.running[k]; save(); render() }
+    function resume(id,j){ start(id,j) }
+    function reset(id,j){ const k=keyFor(id,j); delete state.running[k]; const e=state.elements.find(x=>x.id===id); if(!e) return; e.reps[j]=0; save(); render() }
+    function stopAll(){ Object.keys(state.running).forEach(k=>{ const [id,rep]=k.split('::'); stop(id,Number(rep)) }) }
+    function clearAll(){ Object.keys(state.running).forEach(k=> delete state.running[k]); state.elements.forEach(e=> e.reps=Array(REPS).fill(0)); save(); render() }
+
+    // Export / Import
+    function exportCSV(){
+      const header=['Elemento', ...Array.from({length:REPS},(_,i)=>`Rep ${i+1}`), 'Total Elemento'];
+      const rows=state.elements.map(e=> [e.name, ...e.reps.map(ms=>fmt(ms)), fmt(rowTotal(e))]);
+      const totals=colTotals();
+      const totalRow=['Total Columna', ...totals.map(ms=>fmt(ms)), fmt(totals.reduce((a,b)=>a+b,0))];
+      const all=[header, ...rows, totalRow];
+      const csv=all.map(r=> r.map(x=> '"'+String(x).replaceAll('"','""')+'"').join(',')).join('\n');
+      const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`tiempos_15reps_${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(url);
+    }
+    function exportJSON(){ const blob=new Blob([JSON.stringify({elements:state.elements, createdAt:new Date().toISOString()},null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`tiempos_15reps_${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(url) }
+    function importJSON(file){ const r=new FileReader(); r.onload=(e)=>{ try{ const parsed=JSON.parse(e.target.result); if(!parsed||!Array.isArray(parsed.elements)) throw new Error('Formato inválido'); state.elements = parsed.elements.map(e=>({id:e.id||uuid(), name:e.name||'Elemento', reps:Array.from({length:REPS},(_,i)=> Number(e.reps?.[i]||0))})); save(); numEl.value=state.elements.length; render(); }catch{ alert('No se pudo importar el JSON') } }; r.readAsText(file) }
+
+    // Responsive controls
+    numEl.addEventListener('change',()=>{
+      let n=Math.max(1,Math.min(300,Number(numEl.value||1)));
+      if(n>state.elements.length){ const diff=n-state.elements.length; for(let i=0;i<diff;i++){ state.elements.push({id:uuid(), name:`Elemento ${state.elements.length+1}`, reps:Array(REPS).fill(0)}) } }
+      else if(n<state.elements.length){ state.elements = state.elements.slice(0,n); // limpiar timers huérfanos
+        const keep=new Set(state.elements.map(e=>e.id)); Object.keys(state.running).forEach(k=>{ const [id]=k.split('::'); if(!keep.has(id)) delete state.running[k] }) }
+      save(); render();
+    })
+
+    document.getElementById('clearAll').addEventListener('click',()=>{ if(confirm('¿Borrar todos los tiempos?')) clearAll() })
+    document.getElementById('exportCsv').addEventListener('click',exportCSV)
+    document.getElementById('exportJson').addEventListener('click',exportJSON)
+    document.getElementById('importJson').addEventListener('change',(ev)=>{ const f=ev.target.files?.[0]; if(f) importJSON(f); ev.target.value='' })
+
+    // Ticker para actualizar labels de celdas corriendo
+    const refreshTicker = (()=>{ let h=null,last=0; function step(ts){ if(ts-last>=60){ last=ts; refreshLabels() } h=requestAnimationFrame(step) } return { start(){ if(!h) h=requestAnimationFrame(step) }, stop(){ if(h){ cancelAnimationFrame(h); h=null } }, ping(){ if(!h) this.start() } } })();
+    function refreshLabels(){ const rows=Array.from(bodyRows.querySelectorAll('tr')); state.elements.forEach((e,r)=>{ for(let j=0;j<REPS;j++){ const k=keyFor(e.id,j); const info=state.running[k]; if(info){ const td=rows[r].querySelectorAll('td')[1+j]; const label=td.querySelector('.mono'); const base=e.reps[j]||0; const d=performance.now()-info.startedAt; label.textContent=fmt(base+d) } } }) }
+
+    // Init
+    load();
+    numEl.value = state.elements.length;
+    render();
+  </script>
+</body>
+</html>
