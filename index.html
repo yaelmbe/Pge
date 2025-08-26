@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Estudio de Tiempos</title>
+  <!-- Tailwind Play CDN (para estilos de las clases que ya usa el componente) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React y ReactDOM desde CDN -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Babel Standalone para poder usar JSX en el navegador -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    /* Suaviza el scroll en móviles */
+    html, body { height: 100%; }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    // Polyfill simple por si el navegador no tiene crypto.randomUUID (iOS antiguo)
+    if (!('crypto' in window) || !('randomUUID' in crypto)) {
+      window.crypto = window.crypto || {};
+      crypto.randomUUID = () => {
+        const s4 = () => Math.floor((1 + Math.random()) * 0x10000).toString(16).slice(1);
+        return "id-" + Date.now().toString(16) + "-" + s4() + s4() + "-" + s4();
+      };
+    }
+
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    // === Utilidades ===
+    function formatMs(ms) {
+      if (ms == null) return "00:00.000";
+      const totalMs = Math.max(0, Math.floor(ms));
+      const minutes = Math.floor(totalMs / 60000);
+      const seconds = Math.floor((totalMs % 60000) / 1000);
+      const millis = totalMs % 1000;
+      const pad = (n, l = 2) => n.toString().padStart(l, "0");
+      return `${pad(minutes)}:${pad(seconds)}.${pad(millis, 3)}`;
+    }
+
+    function parseTimeToMs(text) {
+      // Acepta formatos: mm:ss.mmm o ss.mmm o ss
+      if (!text) return 0;
+      const s = String(text).trim();
+      if (/^\\d+$/.test(s)) return Number(s) * 1000; // segundos enteros
+      const mmss = s.split(":");
+      if (mmss.length === 1) {
+        // ss.mmm
+        return Math.round(parseFloat(mmss[0].replace(",", ".")) * 1000) || 0;
+      }
+      const mm = parseInt(mmss[0], 10) || 0;
+      const secPart = mmss[1].replace(",", ".");
+      const ss = Math.floor(parseFloat(secPart)) || 0;
+      const mmm = Math.round((parseFloat(secPart) - ss) * 1000) || 0;
+      return mm * 60000 + ss * 1000 + mmm;
+    }
+
+    const MAX_CYCLES = 10;
+
+    function TimeStudyApp() {
+      const [numElements, setNumElements] = useState(8);
+      const [selectedCycle, setSelectedCycle] = useState(0); // 0..9
+      const [elements, setElements] = useState(() => {
+        const saved = localStorage.getItem("ts_elements_v1");
+        if (saved) return JSON.parse(saved);
+        return Array.from({ length: 8 }).map((_, i) => ({
+          id: crypto.randomUUID(),
+          name: \`Elemento \${i + 1}\`,
+          times: Array(MAX_CYCLES).fill(0), // ms por ciclo
+        }));
+      });
+      const [running, setRunning] = useState({}); // { [elementId]: { startedAt:number|null, cycle:number|null } }
+      const tickRef = useRef(null);
+
+      // Persistencia
+      useEffect(() => {
+        localStorage.setItem("ts_elements_v1", JSON.stringify(elements));
+      }, [elements]);
+
+      // Ajustar cantidad de elementos
+      useEffect(() => {
+        setElements((prev) => {
+          const diff = numElements - prev.length;
+          if (diff === 0) return prev;
+          if (diff > 0) {
+            const toAdd = Array.from({ length: diff }).map((_, i) => ({
+              id: crypto.randomUUID(),
+              name: \`Elemento \${prev.length + i + 1}\`,
+              times: Array(MAX_CYCLES).fill(0),
+            }));
+            return [...prev, ...toAdd];
+          } else {
+            // cortar
+            const next = prev.slice(0, numElements);
+            // limpiar timers de eliminados
+            const keepIds = new Set(next.map((e) => e.id));
+            setRunning((r) => Object.fromEntries(Object.entries(r).filter(([k]) => keepIds.has(k))));
+            return next;
+          }
+        });
+      }, [numElements]);
+
+      // Tick para refrescar cronos activos
+      useEffect(() => {
+        tickRef.current = setInterval(() => {
+          // forzar render
+          setRunning((r) => ({ ...r }));
+        }, 50);
+        return () => clearInterval(tickRef.current);
+      }, []);
+
+      // Cambiar de ciclo detiene todos los cronos para evitar errores
+      useEffect(() => {
+        if (Object.keys(running).length) {
+          stopAll();
+        }
+      }, [selectedCycle]);
+
+      const start = (elementId) => {
+        setRunning((r) => ({
+          ...r,
+          [elementId]: { startedAt: performance.now(), cycle: selectedCycle },
+        }));
+      };
+
+      const stop = (elementId) => {
+        setRunning((r) => {
+          const info = r[elementId];
+          if (!info || info.cycle !== selectedCycle || info.startedAt == null) return r;
+          const elapsed = performance.now() - info.startedAt;
+          setElements((els) => els.map((e) => {
+            if (e.id !== elementId) return e;
+            const t = [...e.times];
+            t[selectedCycle] = Math.max(0, (t[selectedCycle] || 0) + elapsed);
+            return { ...e, times: t };
+          }));
+          const newR = { ...r };
+          delete newR[elementId];
+          return newR;
+        });
+      };
+
+      const reset = (elementId) => {
+        // si está corriendo, lo detiene y limpia
+        setRunning((r) => {
+          const newR = { ...r };
+          delete newR[elementId];
+          return newR;
+        });
+        setElements((els) => els.map((e) => {
+          if (e.id !== elementId) return e;
+          const t = [...e.times];
+          t[selectedCycle] = 0;
+          return { ...e, times: t };
+        }));
+      };
+
+      const stopAll = () => {
+        const ids = Object.keys(running);
+        ids.forEach((id) => stop(id));
+      };
+
+      const resume = (elementId) => start(elementId);
+
+      const updateName = (elementId, name) => {
+        setElements((els) => els.map((e) => (e.id === elementId ? { ...e, name } : e)));
+      };
+
+      const updateCellByText = (elementId, cycleIdx, text) => {
+        const ms = parseTimeToMs(text);
+        setElements((els) => els.map((e) => {
+          if (e.id !== elementId) return e;
+          const t = [...e.times];
+          t[cycleIdx] = ms;
+          return { ...e, times: t };
+        }));
+      };
+
+      const rowTotals = useMemo(() => elements.map((e) => e.times.reduce((a, b) => a + (b || 0), 0)), [elements]);
+      const colTotals = useMemo(() => {
+        const totals = Array(MAX_CYCLES).fill(0);
+        elements.forEach((e) => e.times.forEach((v, j) => (totals[j] += v || 0)));
+        return totals;
+      }, [elements]);
+      const grandTotal = useMemo(() => rowTotals.reduce((a, b) => a + b, 0), [rowTotals]);
+
+      const exportCSV = () => {
+        const header = ["Elemento", ...Array.from({ length: MAX_CYCLES }).map((_, i) => \`Ciclo \${i + 1}\`), "Total Fila"];
+        const rows = elements.map((e, idx) => [
+          e.name,
+          ...e.times.map((ms) => formatMs(ms)),
+          formatMs(rowTotals[idx]),
+        ]);
+        const totalsRow = ["Total Columna", ...colTotals.map((ms) => formatMs(ms)), formatMs(grandTotal)];
+        const all = [header, ...rows, totalsRow];
+        const csv = all.map((r) => r.map((x) => \`"\${String(x).replaceAll('"', '""')}"\`).join(",")).join("\\n");
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = \`estudio_tiempos_\${new Date().toISOString().slice(0,10)}.csv\`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const exportJSON = () => {
+        const data = { elements, selectedCycle, createdAt: new Date().toISOString() };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = \`estudio_tiempos_\${new Date().toISOString().slice(0,10)}.json\`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const importJSON = (file) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const parsed = JSON.parse(e.target.result);
+            if (!parsed || !Array.isArray(parsed.elements)) throw new Error("Formato inválido");
+            setElements(parsed.elements.map((e) => ({
+              id: e.id || crypto.randomUUID(),
+              name: e.name || "Elemento",
+              times: Array.from({ length: MAX_CYCLES }).map((_, i) => Number(e.times?.[i] || 0)),
+            })));
+            setNumElements(parsed.elements.length);
+            setSelectedCycle(Math.min(MAX_CYCLES - 1, Number(parsed.selectedCycle || 0)));
+            setRunning({});
+          } catch (err) {
+            alert("No se pudo importar el archivo JSON.");
+          }
+        };
+        reader.readAsText(file);
+      };
+
+      const isRunning = (id) => Boolean(running[id] && running[id].startedAt != null && running[id].cycle === selectedCycle);
+      const displayCell = (e, j) => {
+        if (isRunning(e.id) && j === selectedCycle) {
+          const info = running[e.id];
+          const base = e.times[j] || 0;
+          const delta = performance.now() - info.startedAt;
+          return formatMs(base + delta);
+        }
+        return formatMs(e.times[j] || 0);
+      };
+
+      return (
+        <div className="min-h-screen bg-gray-50 text-gray-900 p-4 sm:p-6">
+          <div className="max-w-6xl mx-auto">
+            <header className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+              <h1 className="text-2xl sm:text-3xl font-bold">Estudio de Tiempos</h1>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 bg-white rounded-xl px-3 py-2 shadow">
+                  <span className="text-sm font-medium">Elementos</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    className="w-20 border rounded-lg px-2 py-1"
+                    value={numElements}
+                    onChange={(e) => setNumElements(Math.max(1, Math.min(200, Number(e.target.value || 1))))}
+                    title="Cantidad de elementos (filas)"
+                  />
+                </label>
+
+                <label className="flex items-center gap-2 bg-white rounded-xl px-3 py-2 shadow">
+                  <span className="text-sm font-medium">Ciclo</span>
+                  <select
+                    className="border rounded-lg px-2 py-1"
+                    value={selectedCycle}
+                    onChange={(e) => setSelectedCycle(Number(e.target.value))}
+                    title="Selecciona el ciclo activo"
+                  >
+                    {Array.from({ length: MAX_CYCLES }).map((_, i) => (
+                      <option key={i} value={i}>{i + 1}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <button onClick={stopAll} className="px-3 py-2 rounded-xl bg-gray-800 text-white shadow hover:opacity-90">Detener todos</button>
+                
+                <button onClick={exportCSV} className="px-3 py-2 rounded-xl bg-white border shadow hover:bg-gray-100">Exportar CSV</button>
+                <button onClick={exportJSON} className="px-3 py-2 rounded-xl bg-white border shadow hover:bg-gray-100">Exportar JSON</button>
+                <label className="px-3 py-2 rounded-xl bg-white border shadow hover:bg-gray-100 cursor-pointer">
+                  Importar JSON
+                  <input type="file" accept="application/json" className="hidden" onChange={(e) => e.target.files?.[0] && importJSON(e.target.files[0])} />
+                </label>
+              </div>
+            </header>
+
+            <div className="overflow-auto rounded-2xl shadow">
+              <table className="min-w-full bg-white">
+                <thead className="bg-gray-100 sticky top-0 z-10">
+                  <tr>
+                    <th className="p-3 text-left w-64">Elemento / Controles</th>
+                    {Array.from({ length: MAX_CYCLES }).map((_, i) => (
+                      <th key={i} className={\`p-3 text-center whitespace-nowrap \${selectedCycle === i ? "bg-indigo-50" : ""}\`}>Ciclo {i + 1}</th>
+                    ))}
+                    <th className="p-3 text-center">Total Fila</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {elements.map((e, rowIdx) => (
+                    <tr key={e.id} className="border-t">
+                      <td className="p-3 align-top">
+                        <div className="flex flex-col gap-2">
+                          <input
+                            className="border rounded-lg px-2 py-1 w-full"
+                            value={e.name}
+                            onChange={(ev) => updateName(e.id, ev.target.value)}
+                            title="Editar título del elemento"
+                          />
+                          <div className="flex flex-wrap gap-2">
+                            {!isRunning(e.id) ? (
+                              <button onClick={() => start(e.id)} className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-sm hover:opacity-90">Iniciar</button>
+                            ) : (
+                              <button onClick={() => stop(e.id)} className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm hover:opacity-90">Detener</button>
+                            )}
+                            <button onClick={() => resume(e.id)} disabled={isRunning(e.id)} className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50">Reanudar</button>
+                            <button onClick={() => reset(e.id)} className="px-3 py-1.5 rounded-lg bg-gray-200 text-sm">Borrar</button>
+                          </div>
+                          <p className="text-xs text-gray-500">Cronómetro controla el <span className="font-medium">Ciclo {selectedCycle + 1}</span> de esta fila.</p>
+                        </div>
+                      </td>
+                      {Array.from({ length: MAX_CYCLES }).map((_, j) => (
+                        <td key={j} className={\`p-2 text-center align-middle \${selectedCycle === j ? "bg-indigo-50" : ""}\`}>
+                          <div className="flex flex-col items-center gap-1">
+                            <div className="font-mono text-sm select-none">{displayCell(e, j)}</div>
+                            <input
+                              className="border rounded px-2 py-1 w-28 text-center text-sm"
+                              placeholder="mm:ss.mmm"
+                              defaultValue={formatMs(e.times[j] || 0)}
+                              onBlur={(ev) => updateCellByText(e.id, j, ev.target.value)}
+                              onKeyDown={(ev) => {
+                                if (ev.key === "Enter") ev.currentTarget.blur();
+                              }}
+                              title="Editar manualmente (mm:ss.mmm o segundos)"
+                            />
+                          </div>
+                        </td>
+                      ))}
+                      <td className="p-2 text-center font-mono">{formatMs(rowTotals[rowIdx])}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-gray-50 border-t-2">
+                    <td className="p-3 text-right font-semibold">Total columna</td>
+                    {colTotals.map((v, i) => (
+                      <td key={i} className={\`p-2 text-center font-mono \${selectedCycle === i ? "bg-indigo-50" : ""}\`}>{formatMs(v)}</td>
+                    ))}
+                    <td className="p-2 text-center font-mono font-semibold">{formatMs(grandTotal)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            <div className="mt-4 text-sm text-gray-600 space-y-1">
+              <p>💡 Sugerencias: cambia el ciclo activo para registrar tiempos en esa columna. Los datos se guardan automáticamente en este navegador.</p>
+              <p>⌨️ Consejo: en cualquier celda puedes teclear un valor (por ejemplo, <span className="font-mono">1:23.450</span> o <span className="font-mono">7.2</span>) y presionar Enter.</p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<TimeStudyApp />);
+  </script>
+</body>
+</html>
