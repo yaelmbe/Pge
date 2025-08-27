@@ -1,0 +1,8 @@
+{
+  "name": "pge-app",
+  "version": "1.0.0",
+  "description": "Time study React app",
+  "scripts": {
+    "test": "node -e \"console.log('No tests specified')\""
+  }
+}
